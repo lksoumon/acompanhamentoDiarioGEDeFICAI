@@ -1,8 +1,7 @@
-
 // ==UserScript==
 // @name         Não imprimir calendário
 // @namespace    http://tampermonkey.net/
-// @version      2026-02-26
+// @version      2026-02-27
 // @description  Bloqueia a impressão automática
 // @author       You
 // @match        http://sigeduca.seduc.mt.gov.br/grh/hwmgrhcalendarioimp.aspx?*
