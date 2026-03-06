@@ -6,7 +6,6 @@
 // @author       You
 // @match        http://sigeduca.seduc.mt.gov.br/grh/hwmgrhcalendarioimp.aspx?*
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=gov.br
-// @grant        unsafeWindow
 // @run-at       document-start
 // @updateURL    https://github.com/lksoumon/acompanhamentoDiarioGEDeFICAI/raw/refs/heads/main/impede.impressao.complementar.user.js
 // @downloadURL  https://github.com/lksoumon/acompanhamentoDiarioGEDeFICAI/raw/refs/heads/main/impede.impressao.complementar.user.js
