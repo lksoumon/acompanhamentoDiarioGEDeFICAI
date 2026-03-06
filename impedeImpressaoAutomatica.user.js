@@ -8,6 +8,8 @@
 // @run-at       document-start
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=gov.br
 // @grant        unsafeWindow
+// @updateURL    https://github.com/lksoumon/acompanhamentoDiarioGEDeFICAI/raw/refs/heads/main/impedeImpressaoAutomatica.user.js
+// @downloadURL  https://github.com/lksoumon/acompanhamentoDiarioGEDeFICAI/raw/refs/heads/main/impedeImpressaoAutomatica.user.js
 // ==/UserScript==
 
 (function() {
