@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Não imprimir calendário
 // @namespace    http://tampermonkey.net/
-// @version      2026-02-27
+// @version      2026-02-28
 // @description  Bloqueia a impressão automática
 // @author       You
 // @match        http://sigeduca.seduc.mt.gov.br/grh/hwmgrhcalendarioimp.aspx?*
@@ -13,10 +13,10 @@
 
 (function() {
     'use strict';
-
+    /////// não precisa mais desse script
     // Sobrescreve a função nativa de impressão na janela principal antes que a página carregue
-    unsafeWindow.print = function() {
-        console.log("Impressão automática bloqueada pelo Tampermonkey.");
-    };
+    //unsafeWindow.print = function() {
+    //    console.log("Impressão automática bloqueada pelo Tampermonkey.");
+    //};
 
 })();
