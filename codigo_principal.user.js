@@ -1,13 +1,11 @@
 // ==UserScript==
 // @name         Diario GED para acompanhamento de lançamentos e FICAI (Completo)
 // @namespace    http://tampermonkey.net/
-// @version      v2.5-FaltasReais-LegendaAuditoria
-// @description  Atestados e Justificativas em Azul. Detecta aulas geminadas. Exporta Faltas REAIS (sem justif) em JSON. Legenda na auditoria.
+// @version      v2.8
+// @description  Atestados/Justif. Geminadas. JSON Faltas. Legenda. Envia LOGS ao Mestre. Corrige travamento em turmas com Período Misto (Bimestre + Único).
 // @author       Lucas Monteiro
 // @match        http://sigeduca.seduc.mt.gov.br/ged/hwgedemitediarioclasse.aspx?*
 // @grant        none
-// @updateURL    https://github.com/lksoumon/acompanhamentoDiarioGEDeFICAI/raw/refs/heads/main/codigo_principal.user.js
-// @downloadURL  https://github.com/lksoumon/acompanhamentoDiarioGEDeFICAI/raw/refs/heads/main/codigo_principal.user.js
 // ==/UserScript==
 
 (function() {
@@ -22,6 +20,19 @@
     let diasLecionadosGlobais = {};
     let diasLetivosGlobais = [];
     let infoServidores = { lista: [], chDisciplina: {}, chTotal: 0 };
+
+    // --- FUNÇÃO DE COMUNICAÇÃO COM O MESTRE ---
+    function notificarStatus(texto, corCss = "#333") {
+        const statusEl = document.getElementById('statusProgresso');
+        if(statusEl) {
+            statusEl.innerText = texto;
+            statusEl.style.color = corCss;
+        }
+        const urlParams = new URLSearchParams(window.location.search);
+        if (urlParams.get('autorun') === '1') {
+            window.parent.postMessage({ type: 'GED_AUTO_LOG', payload: texto }, "*");
+        }
+    }
 
     // --- FUNÇÕES DE APOIO ---
     function recortarString(strPrincipal, strInicio, strFinal) {
@@ -106,6 +117,7 @@
             let iframe = document.createElement('iframe');
             iframe.id = 'iframeImpressao'; iframe.name = 'iframeImpressao';
             iframe.style.cssText = 'width: 100%; height: 100%; border: none;';
+            iframe.sandbox='allow-scripts allow-same-origin';
             container.appendChild(iframe); document.body.appendChild(container);
         }
         return container;
@@ -148,8 +160,9 @@
             });
         }
         document.getElementById('btnPararAutomacao').onclick = () => {
-            executandoLoop = false; document.getElementById('statusProgresso').innerText = "Interrompido!";
-            document.getElementById('statusProgresso').style.color = "#dc3545"; document.getElementById('btnPararAutomacao').style.display = 'none';
+            executandoLoop = false;
+            notificarStatus("Interrompido!", "#dc3545");
+            document.getElementById('btnPararAutomacao').style.display = 'none';
         };
     }
 
@@ -272,8 +285,10 @@
 
     async function extrairAtestadosIframe(listaAlunosIds) {
         const iframe = document.getElementById('iframeImpressao');
-        const status = document.getElementById('statusProgresso'); const barra = document.getElementById('barraProgresso');
-        status.innerText = "Carregando tela de Atestados..."; barra.style.width = `0%`;
+        const barra = document.getElementById('barraProgresso');
+
+        notificarStatus("Carregando tela de Atestados...");
+        barra.style.width = `0%`;
         iframe.src = 'http://sigeduca.seduc.mt.gov.br/ged/hwmgedatestado.aspx';
 
         let iframeDoc = iframe.contentWindow.document; let tentativasLoad = 0;
@@ -283,7 +298,8 @@
         for (let i = 0; i < listaAlunosIds.length; i++) {
             if (!executandoLoop) break;
             let alunoCodigo = listaAlunosIds[i];
-            status.innerText = `Lendo Atestados: Aluno ${i + 1} de ${listaAlunosIds.length}`; barra.style.width = `${Math.round(((i + 1) / listaAlunosIds.length) * 100)}%`;
+            notificarStatus(`Lendo Atestados: Aluno ${i + 1} de ${listaAlunosIds.length}`);
+            barra.style.width = `${Math.round(((i + 1) / listaAlunosIds.length) * 100)}%`;
 
             let inputAluno = iframeDoc.getElementById('vGEDALUCOD');
             if (inputAluno) {
@@ -330,7 +346,6 @@
         }
     }
 
-    // --- HTML INDIVIDUAL COM SOMA E EXPORTAÇÃO JSON ---
     function gerarEBaixarRelatorioHTML(opts) {
         let anoDaTurma = parseInt(metadadosTurma.ano) || new Date().getFullYear();
         let todasAsDatas = new Set();
@@ -365,7 +380,6 @@
         });
         const nomeMeses = ["Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"];
 
-        // Prepara dados dos alunos e estrutura de Faltas (JSON) EXCLUINDO justificadas
         let alunosArray = Object.keys(alunosDados).map(cod => {
             let aluno = { codigo: cod, ...alunosDados[cod], totalFaltas: 0, totalPresencas: 0, faltasJustificadas: 0, relatorioFaltasJson: {} };
 
@@ -385,7 +399,6 @@
                             if (temJustificativa) {
                                 aluno.faltasJustificadas++;
                             } else {
-                                // MÁGICA: Só vai para o JSON se a falta NÃO for justificada
                                 matComFaltaNoDia.push(disc);
                             }
                         } else {
@@ -459,7 +472,7 @@
             html += `<h2>2. Auditoria Semanal de Lançamentos</h2>
                      <div class="legenda-auditoria">
                         <strong>⚠️ Entendendo as cores:</strong><br>
-                        - <strong style="color: #b30000;">Vermelho:</strong> O professor lançou aulas a <strong>MENOS</strong> em uma semana normal (5 dias letivos), ou lançou <strong>A MAIS</strong> que a base.<br>
+                        - <strong style="color: #b30000;">Vermelho:</strong> O professor lançou aulas a <strong>MENOS</strong> em uma semana normal (5 dias letivos), ou lançou <strong>A MAIS</strong> que a base, o que é um erro grave.<br>
                         - <strong style="color: #856404;">Amarelo:</strong> Lançou aulas a <strong>MENOS</strong>, mas a semana tem <strong>menos de 5 dias letivos</strong> (feriados, etc). Precisa de conferência manual. (Obs: Se ele atingiu a carga base mesmo no feriado, fica sem cor).
                      </div>
                      <div style="overflow-x: auto;"><table style="white-space: nowrap;">
@@ -497,7 +510,7 @@
                     let classe = '';
                     if (chEsperada !== '?') {
                         if (qtde > chEsperada) {
-                            classe = 'alerta-celula'; // Sempre erro vermelho se passou da Base
+                            classe = 'alerta-celula';
                         } else if (qtde < chEsperada) {
                             classe = (numDiasLetivos < 5) ? 'alerta-celula-amarelo' : 'alerta-celula';
                         }
@@ -509,34 +522,21 @@
                 html += rowHtml;
             });
 
-            // LINHA DE SOMA TOTAL
             html += `<tr style="background-color: #e8f0fe;"><td style="text-align: left; font-weight: bold; color: #1967d2;">TOTAL LANÇADO NA SEMANA</td><td style="font-weight: bold; color: #1967d2;">-</td>`;
-            totaisPorSemana.forEach(tot => {
-                html += `<td style="font-weight:bold; color: #1967d2;">${tot}</td>`;
-            });
+            totaisPorSemana.forEach(tot => { html += `<td style="font-weight:bold; color: #1967d2;">${tot}</td>`; });
             html += `<td style="font-weight:bold; color: #1967d2; font-size: 14px;">${totalGeralLancadoEscola}</td></tr>`;
-
             html += `</tbody></table></div>`;
         }
 
         html += `<h2>3. Calendário Detalhado por Aluno</h2>`;
         alunosArray.forEach(aluno => {
-
-            // Objeto JSON pronto
-            let objetoJsonFaltas = {
-                codigo: aluno.codigo,
-                nome: aluno.nome,
-                turma: metadadosTurma.turma || '',
-                faltas: aluno.relatorioFaltasJson // Aqui já estão sem as justificadas!
-            };
+            let objetoJsonFaltas = { codigo: aluno.codigo, nome: aluno.nome, turma: metadadosTurma.turma || '', faltas: aluno.relatorioFaltasJson };
             let jsonStringSafe = JSON.stringify(objetoJsonFaltas).replace(/'/g, "&apos;");
 
-            html += `<div class="aluno-card">
-                        <div class="aluno-nome">
+            html += `<div class="aluno-card"><div class="aluno-nome">
                             <span>${aluno.nome} <span style="font-size:12px; color:#7f8c8d; font-weight:normal;">(Cód: ${aluno.codigo})</span></span>
                             <button class="btn-copy" data-json='${jsonStringSafe}' onclick="copiarJson(this)">📋 Copiar Faltas JSON</button>
-                        </div>
-                        <div class="calendario-wrapper">`;
+                        </div><div class="calendario-wrapper">`;
 
             Object.keys(datasPorMes).sort().forEach(key => {
                 let info = datasPorMes[key]; let mIdx = parseInt(info.mesStr, 10) - 1; let anoNum = parseInt(info.anoNum, 10);
@@ -602,40 +602,32 @@
                 });
                 function copiarJson(btn) {
                     navigator.clipboard.writeText(btn.getAttribute('data-json')).then(() => {
-                        let originalText = btn.innerText;
-                        btn.innerText = '✅ Copiado!';
-                        btn.style.backgroundColor = '#28a745';
-                        setTimeout(() => {
-                            btn.innerText = originalText;
-                            btn.style.backgroundColor = '#1967d2';
-                        }, 2000);
+                        let originalText = btn.innerText; btn.innerText = '✅ Copiado!'; btn.style.backgroundColor = '#28a745';
+                        setTimeout(() => { btn.innerText = originalText; btn.style.backgroundColor = '#1967d2'; }, 2000);
                     });
                 }
             </script>
             </div></body></html>`;
 
         const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
-        const url = URL.createObjectURL(blob);
-        const linkDeDownload = document.createElement('a');
-
+        const url = URL.createObjectURL(blob); const linkDeDownload = document.createElement('a');
         let nomeArquivoLimpo = (metadadosTurma.turma || "Auditoria").replace(/[^a-zA-Z0-9]/g, '_').replace(/_+/g, '_');
         let matrizLimpa = (metadadosTurma.matrizDesc || "Matriz").replace(/[^a-zA-Z0-9]/g, '_').replace(/_+/g, '_');
-
-        linkDeDownload.href = url;
-        linkDeDownload.download = `Auditoria_${matrizLimpa}_${nomeArquivoLimpo}.html`;
+        linkDeDownload.href = url; linkDeDownload.download = `Auditoria_${matrizLimpa}_${nomeArquivoLimpo}.html`;
         document.body.appendChild(linkDeDownload); linkDeDownload.click(); document.body.removeChild(linkDeDownload); URL.revokeObjectURL(url);
     }
 
-    async function iniciarLoop(valorBimestre, textoBimestre) {
+    async function iniciarLoop(valorBimestreRequisitado, textoBimestre) {
         if (executandoLoop) return; executandoLoop = true;
         alunosDados = {}; metadadosTurma = { ano: "", ip: "", fp: "", turma: "", turno: "", matrizDesc: "" };
         disciplinasLidasNoCabecalho.clear(); diasLecionadosGlobais = {}; diasLetivosGlobais = [];
         infoServidores = { lista: [], chDisciplina: {}, chTotal: 0 };
 
-        const btnParar = document.getElementById('btnPararAutomacao'); const barra = document.getElementById('barraProgresso'); const status = document.getElementById('statusProgresso');
+        const btnParar = document.getElementById('btnPararAutomacao'); const barra = document.getElementById('barraProgresso');
         const optProfessores = document.getElementById('chkOpProfessores').checked; const optAuditoria = document.getElementById('chkOpAuditoria').checked; const optAtestados = document.getElementById('chkOpAtestados').checked;
 
-        btnParar.style.display = 'block'; barra.style.width = '0%'; status.style.color = "#333";
+        btnParar.style.display = 'block'; barra.style.width = '0%';
+        notificarStatus("Iniciando extração...", "#333");
 
         try {
             let actionCompleto = document.getElementById("MAINFORM").action; let parametrosAction = actionCompleto.split('?')[1].split(',');
@@ -648,7 +640,7 @@
             prepararIframe(); const iframeImpressao = document.getElementById('iframeImpressao');
 
             if (optAuditoria) {
-                status.innerText = "Coletando Calendário Escolar...";
+                notificarStatus("Acessando banco de Calendários Seduc...");
                 iframeImpressao.src = `http://sigeduca.seduc.mt.gov.br/grh/hwmgrhcalendarioimp.aspx?${metadadosTurma.ano},${escola}`;
                 await new Promise((resolve) => {
                     const aoCarregar = () => { iframeImpressao.removeEventListener('load', aoCarregar); resolve(); };
@@ -678,23 +670,26 @@
                         }
                     });
                     diasLetivosGlobais = [...new Set(diasLetivosGlobais)];
-                } catch (e) { console.error("Erro calendário:", e); }
+                    notificarStatus(`Calendário obtido (${diasLetivosGlobais.length} dias letivos)`);
+                } catch (e) {}
             }
 
             if (optProfessores || optAuditoria) {
-                status.innerText = "Coletando Quadro de Professores...";
+                notificarStatus("Buscando Lotação dos Professores...");
                 iframeImpressao.src = `http://sigeduca.seduc.mt.gov.br/ged/hwmgrhturmaservidor.aspx?${metadadosTurma.ano},${escola},${cidade},${sala},,${turnoNum},${chaveDesc1},${turnoTexto},HWMGrhLotTurma.aspx%3f0%2c0%2c0%2c0,${matriz},,,`;
                 await new Promise((resolve) => {
                     const aoCarregar = () => { iframeImpressao.removeEventListener('load', aoCarregar); resolve(); };
                     iframeImpressao.addEventListener('load', aoCarregar); setTimeout(() => { iframeImpressao.removeEventListener('load', aoCarregar); resolve(); }, 20000);
                 });
                 await delay(1500);
-                if (iframeImpressao.contentWindow) extrairDadosServidores(iframeImpressao.contentWindow.document);
+                if (iframeImpressao.contentWindow) {
+                    extrairDadosServidores(iframeImpressao.contentWindow.document);
+                    notificarStatus("Quadro de Professores vinculado.");
+                }
             }
-
         } catch (e) {}
 
-        status.innerText = "Selecionando opção 'Preenchido'...";
+        notificarStatus("Ativando visualização modo 'Preenchido'...");
         const radioPreenchido = document.querySelector('input[name="vOPCAOREL"][value="1"]');
         if (radioPreenchido && !radioPreenchido.checked) {
             radioPreenchido.checked = true; radioPreenchido.dispatchEvent(new Event('focus', { bubbles: true }));
@@ -702,36 +697,45 @@
             radioPreenchido.dispatchEvent(new Event('blur', { bubbles: true })); await delay(1500);
         }
 
-        let selectBimestreInicial = document.getElementById('vGEDPERCOD');
-        if (selectBimestreInicial) {
-            let optReqExiste = Array.from(selectBimestreInicial.options).some(opt => opt.value === valorBimestre);
-            let opt21Existe = Array.from(selectBimestreInicial.options).some(opt => opt.value === "21");
-            if (!optReqExiste && opt21Existe) { valorBimestre = "21"; textoBimestre = "Período Único"; }
-        }
-
-        const selectBimestre = document.getElementById('vGEDPERCOD');
-        selectBimestre.value = valorBimestre; selectBimestre.dispatchEvent(new Event('focus')); selectBimestre.dispatchEvent(new Event('change')); selectBimestre.dispatchEvent(new Event('blur'));
-
-        status.innerText = `Carregando ${textoBimestre}...`; await delay(2000);
+        notificarStatus(`Preparando Leitura...`); await delay(2000);
         const disciplinasSelectAtualizado = document.getElementById('vDISCIPLINAAREACOD');
         const disciplinas = Array.from(disciplinasSelectAtualizado.options).filter(opt => opt.value !== "0");
         const total = disciplinas.length; const iframeImpressao = document.getElementById('iframeImpressao');
 
         for (let i = 0; i < total; i++) {
             if (!executandoLoop) break;
-            const disc = disciplinas[i]; barra.style.width = `${Math.round(((i + 1) / total) * 100)}%`; status.innerText = `Lendo Diário: ${disc.text.substring(0, 15)}...`;
+            const disc = disciplinas[i]; barra.style.width = `${Math.round(((i + 1) / total) * 100)}%`;
+            notificarStatus(`Lendo Diário: ${disc.text.substring(0, 30)}...`);
 
+            // 1. Muda a disciplina
             const discSelect = document.getElementById('vDISCIPLINAAREACOD');
             discSelect.value = disc.value; discSelect.dispatchEvent(new Event('focus')); discSelect.dispatchEvent(new Event('change')); discSelect.dispatchEvent(new Event('blur'));
-
             await delay(500); while (!isNotificationHidden(document)) { await delay(300); }
 
+            // 2. AVALIA OS BIMESTRES DISPONÍVEIS PARA ESSA DISCIPLINA
             const selectBimestreLoop = document.getElementById('vGEDPERCOD');
-            if (selectBimestreLoop && selectBimestreLoop.value !== valorBimestre) {
-                selectBimestreLoop.value = valorBimestre; selectBimestreLoop.dispatchEvent(new Event('focus')); selectBimestreLoop.dispatchEvent(new Event('change'));
-                selectBimestreLoop.dispatchEvent(new Event('blur')); await delay(500); while (!isNotificationHidden(document)) { await delay(300); }
+            if (selectBimestreLoop) {
+                let optionsLoop = Array.from(selectBimestreLoop.options);
+                let optReqExiste = optionsLoop.some(opt => opt.value === valorBimestreRequisitado);
+                let opt21Existe = optionsLoop.some(opt => opt.value === "21");
+
+                let valorParaEssaMateria = valorBimestreRequisitado;
+                if (!optReqExiste) {
+                    if (opt21Existe) valorParaEssaMateria = "21"; // Cai pro período único
+                    else if (optionsLoop.length > 1) valorParaEssaMateria = optionsLoop[optionsLoop.length - 1].value; // Pega o último válido possível
+                }
+
+                if (selectBimestreLoop.value !== valorParaEssaMateria) {
+                    selectBimestreLoop.value = valorParaEssaMateria;
+                    selectBimestreLoop.dispatchEvent(new Event('focus'));
+                    selectBimestreLoop.dispatchEvent(new Event('change'));
+                    selectBimestreLoop.dispatchEvent(new Event('blur'));
+                    await delay(500);
+                    while (!isNotificationHidden(document)) { await delay(300); }
+                }
             }
 
+            // 3. Imprime
             const btnImprimir = document.querySelector('input[name="BIMPRIMIR"]');
             if (btnImprimir) {
                 const form = btnImprimir.closest('form') || document.forms[0];
@@ -750,7 +754,7 @@
                 if (form) setTimeout(() => { if (targetOriginal === null) form.removeAttribute('target'); else form.setAttribute('target', targetOriginal); }, 1000);
 
                 try { await promiseLoadIframe; await delay(500); }
-                catch (err) { executandoLoop = false; status.innerText = "Erro!"; status.style.color = "#dc3545"; btnParar.style.display = 'none'; return; }
+                catch (err) { executandoLoop = false; notificarStatus("Erro no Sigeduca!", "#dc3545"); btnParar.style.display = 'none'; return; }
             }
             extrairDadosIframe();
         }
@@ -761,7 +765,7 @@
         }
 
         if (executandoLoop) {
-            status.innerText = "Extração Concluída!"; status.style.color = "#28a745";
+            notificarStatus("Extração Concluída!", "#28a745");
 
             const urlParams = new URLSearchParams(window.location.search);
             if (urlParams.get('autorun') === '1') {
