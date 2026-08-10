@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Diario GED para acompanhamento de lançamentos e FICAI (Completo)
 // @namespace    http://tampermonkey.net/
-// @version      v2.8
-// @description  Atestados/Justif. Geminadas. JSON Faltas. Legenda. Envia LOGS ao Mestre. Corrige travamento em turmas com Período Misto (Bimestre + Único).
+// @version      v2.9
+// @description  Atestados/Justif. Geminadas. JSON Faltas. Legenda. Envia LOGS ao Mestre. Corrige travamento em turmas. Adicionado: Opção de processamento cumulativo de bimestres.
 // @author       Lucas Monteiro
 // @match        http://sigeduca.seduc.mt.gov.br/ged/hwgedemitediarioclasse.aspx?*
 // @grant        none
@@ -138,6 +138,10 @@
                 <label style="display:block; margin-top:4px; cursor:pointer;"><input type="checkbox" id="chkOpProfessores" checked> Quadro Servidores</label>
                 <label style="display:block; margin-top:4px; cursor:pointer;"><input type="checkbox" id="chkOpAuditoria" checked> Auditoria Semanal</label>
                 <label style="display:block; margin-top:4px; cursor:pointer;"><input type="checkbox" id="chkOpAtestados" checked> Atestados/Justificativas</label>
+                <hr style="border-top: 1px solid #ccc; margin: 8px 0;">
+                <label style="display:block; margin-top:4px; cursor:pointer;" title="Processa todos os bimestres até o selecionado">
+                    <input type="checkbox" id="chkAcumularBimestres" checked> <strong>Acumular bimestres anteriores</strong>
+                </label>
             </div>
             <div id="containerBotoesBimestre" style="display: flex; flex-direction: column; gap: 8px; margin-bottom: 15px;"></div>
             <div style="margin-bottom: 5px; font-size: 12px; font-weight: bold; color: #333;" id="statusProgresso">Aguardando...</div>
@@ -626,7 +630,10 @@
         infoServidores = { lista: [], chDisciplina: {}, chTotal: 0 };
 
         const btnParar = document.getElementById('btnPararAutomacao'); const barra = document.getElementById('barraProgresso');
-        const optProfessores = document.getElementById('chkOpProfessores').checked; const optAuditoria = document.getElementById('chkOpAuditoria').checked; const optAtestados = document.getElementById('chkOpAtestados').checked;
+        const optProfessores = document.getElementById('chkOpProfessores').checked;
+        const optAuditoria = document.getElementById('chkOpAuditoria').checked;
+        const optAtestados = document.getElementById('chkOpAtestados').checked;
+        const optAcumular = document.getElementById('chkAcumularBimestres') ? document.getElementById('chkAcumularBimestres').checked : false;
 
         btnParar.style.display = 'block'; barra.style.width = '0%';
         notificarStatus("Iniciando extração...", "#333");
@@ -716,49 +723,71 @@
 
             // 2. AVALIA OS BIMESTRES DISPONÍVEIS PARA ESSA DISCIPLINA
             const selectBimestreLoop = document.getElementById('vGEDPERCOD');
+            let bimestresAlvo = [];
+
             if (selectBimestreLoop) {
                 let optionsLoop = Array.from(selectBimestreLoop.options);
-                let optReqExiste = optionsLoop.some(opt => opt.value === valorBimestreRequisitado);
-                let opt21Existe = optionsLoop.some(opt => opt.value === "21");
+                let opcoesValidas = optionsLoop.filter(opt => opt.value !== "0" && opt.value !== "21");
+                let idxRequisitado = opcoesValidas.findIndex(opt => opt.value === valorBimestreRequisitado);
 
-                let valorParaEssaMateria = valorBimestreRequisitado;
-                if (!optReqExiste) {
-                    if (opt21Existe) valorParaEssaMateria = "21"; // Cai pro período único
-                    else if (optionsLoop.length > 1) valorParaEssaMateria = optionsLoop[optionsLoop.length - 1].value; // Pega o último válido possível
+                if (idxRequisitado !== -1) {
+                    if (optAcumular) {
+                        bimestresAlvo = opcoesValidas.slice(0, idxRequisitado + 1).map(o => o.value);
+                    } else {
+                        bimestresAlvo = [valorBimestreRequisitado];
+                    }
+                } else {
+                    // Trata caso a disciplina não tenha o bimestre escolhido
+                    let opt21Existe = optionsLoop.some(opt => opt.value === "21");
+                    let optReqExiste = optionsLoop.some(opt => opt.value === valorBimestreRequisitado);
+
+                    if (!optReqExiste) {
+                        if (opt21Existe) bimestresAlvo = ["21"];
+                        else if (optionsLoop.length > 1) bimestresAlvo = [optionsLoop[optionsLoop.length - 1].value];
+                    } else {
+                        bimestresAlvo = [valorBimestreRequisitado];
+                    }
                 }
 
-                if (selectBimestreLoop.value !== valorParaEssaMateria) {
-                    selectBimestreLoop.value = valorParaEssaMateria;
-                    selectBimestreLoop.dispatchEvent(new Event('focus'));
-                    selectBimestreLoop.dispatchEvent(new Event('change'));
-                    selectBimestreLoop.dispatchEvent(new Event('blur'));
-                    await delay(500);
-                    while (!isNotificationHidden(document)) { await delay(300); }
+                // Loop interno para processar cada bimestre elencado para esta disciplina
+                for (let b = 0; b < bimestresAlvo.length; b++) {
+                    if (!executandoLoop) break;
+                    let bimAtual = bimestresAlvo[b];
+
+                    if (selectBimestreLoop.value !== bimAtual) {
+                        selectBimestreLoop.value = bimAtual;
+                        selectBimestreLoop.dispatchEvent(new Event('focus'));
+                        selectBimestreLoop.dispatchEvent(new Event('change'));
+                        selectBimestreLoop.dispatchEvent(new Event('blur'));
+                        await delay(500);
+                        while (!isNotificationHidden(document)) { await delay(300); }
+                    }
+
+                    // 3. Imprime
+                    notificarStatus(`Lendo ${disc.text.substring(0, 15)} (Bim: ${bimAtual})...`);
+                    const btnImprimir = document.querySelector('input[name="BIMPRIMIR"]');
+                    if (btnImprimir) {
+                        const form = btnImprimir.closest('form') || document.forms[0];
+                        let targetOriginal = form ? form.getAttribute('target') : null;
+                        if (form) form.setAttribute('target', 'iframeImpressao');
+                        btnImprimir.value = "1";
+
+                        let timeoutId;
+                        let promiseLoadIframe = new Promise((resolve, reject) => {
+                            const aoCarregar = () => { iframeImpressao.removeEventListener('load', aoCarregar); clearTimeout(timeoutId); resolve(); };
+                            iframeImpressao.addEventListener('load', aoCarregar);
+                            timeoutId = setTimeout(() => { iframeImpressao.removeEventListener('load', aoCarregar); reject(new Error("Timeout_Sigeduca")); }, 40000);
+                        });
+
+                        btnImprimir.click();
+                        if (form) setTimeout(() => { if (targetOriginal === null) form.removeAttribute('target'); else form.setAttribute('target', targetOriginal); }, 1000);
+
+                        try { await promiseLoadIframe; await delay(500); }
+                        catch (err) { executandoLoop = false; notificarStatus("Erro no Sigeduca!", "#dc3545"); btnParar.style.display = 'none'; return; }
+                    }
+                    extrairDadosIframe();
                 }
             }
-
-            // 3. Imprime
-            const btnImprimir = document.querySelector('input[name="BIMPRIMIR"]');
-            if (btnImprimir) {
-                const form = btnImprimir.closest('form') || document.forms[0];
-                let targetOriginal = form ? form.getAttribute('target') : null;
-                if (form) form.setAttribute('target', 'iframeImpressao');
-                btnImprimir.value = "1";
-
-                let timeoutId;
-                let promiseLoadIframe = new Promise((resolve, reject) => {
-                    const aoCarregar = () => { iframeImpressao.removeEventListener('load', aoCarregar); clearTimeout(timeoutId); resolve(); };
-                    iframeImpressao.addEventListener('load', aoCarregar);
-                    timeoutId = setTimeout(() => { iframeImpressao.removeEventListener('load', aoCarregar); reject(new Error("Timeout_Sigeduca")); }, 40000);
-                });
-
-                btnImprimir.click();
-                if (form) setTimeout(() => { if (targetOriginal === null) form.removeAttribute('target'); else form.setAttribute('target', targetOriginal); }, 1000);
-
-                try { await promiseLoadIframe; await delay(500); }
-                catch (err) { executandoLoop = false; notificarStatus("Erro no Sigeduca!", "#dc3545"); btnParar.style.display = 'none'; return; }
-            }
-            extrairDadosIframe();
         }
 
         if (executandoLoop && optAtestados) {
