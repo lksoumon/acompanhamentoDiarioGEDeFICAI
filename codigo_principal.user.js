@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Diario GED para acompanhamento de lançamentos e FICAI (Completo)
 // @namespace    http://tampermonkey.net/
-// @version      v3.13
-// @description  Cálculo % de previsto, Auditoria, Sugere correção com Detecção Automática de Aulas Duplas ou Simples por dia.
+// @version      v3.17
+// @description  Cálculo % de previsto, Auditoria, Sugere correção com Detecção Automática de Aulas Duplas ou Simples por dia. (Carregamento Robusto Integrado)
 // @author       Lucas Monteiro
 // @match        http://sigeduca.seduc.mt.gov.br/ged/hwgedemitediarioclasse.aspx?*
 // @grant        none
@@ -120,6 +120,53 @@
         return container;
     }
 
+    // NOVA FUNÇÃO: Espera robusta baseada em polling de elementos reais da página
+    function aguardarIframeTotalmente(iframe, seletorEsperado, timeoutMs = 80000) {
+        return new Promise((resolve, reject) => {
+            let tempoDecorrido = 0;
+            const intervalo = 500;
+            const checkInterval = setInterval(() => {
+                tempoDecorrido += intervalo;
+                if (tempoDecorrido >= timeoutMs) {
+                    clearInterval(checkInterval);
+                    reject(new Error("Timeout ao aguardar carregamento do iframe"));
+                    return;
+                }
+                try {
+                    let win = iframe.contentWindow;
+                    if (!win) return;
+                    let doc = win.document;
+                    // Tenta acessar frames internos (caso o Sigeduca use framesets aninhados)
+                    if (win.frames.length > 0) {
+                        try { doc = win.frames[0].document; } catch(e){}
+                    }
+
+                    // Ignora a página vazia temporária
+                    if (doc && doc.readyState === 'complete' && doc.location.href !== 'about:blank') {
+                        // Aguarda spinner/carregamento do Genexus sumir
+                        if (!isNotificationHidden(doc)) return;
+
+                        if (seletorEsperado) {
+                            // Só avança se o seletor existir na árvore do DOM atual
+                            if (doc.querySelector(seletorEsperado)) {
+                                clearInterval(checkInterval);
+                                resolve(doc);
+                            }
+                        } else {
+                            // Se não tiver seletor, certifica-se de que há conteúdo renderizado
+                            if (doc.body && doc.body.innerHTML.trim().length > 100) {
+                                clearInterval(checkInterval);
+                                resolve(doc);
+                            }
+                        }
+                    }
+                } catch (e) {
+                    // Exceção de cross-origin ignorada silenciosamente enquanto ocorre o redirecionamento
+                }
+            }, intervalo);
+        });
+    }
+
     function criarPainelLateral() {
         if (document.getElementById('painelAutomacaoSeduc')) return;
         const painel = document.createElement('div');
@@ -151,7 +198,7 @@
         const containerBotoes = document.getElementById('containerBotoesBimestre');
         if (selectBimestre && containerBotoes) {
             Array.from(selectBimestre.options).forEach(opcao => {
-                if (opcao.value !== "0" && opcao.value !== "21") {
+                if (opcao.value !== "0") { // alterado aqui
                     let btn = document.createElement('button');
                     btn.innerText = `Processar ${opcao.text}`;
                     btn.style.cssText = 'padding: 8px; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px;';
@@ -420,17 +467,24 @@
             return aluno;
         }).sort((a, b) => a.nome.localeCompare(b.nome));
 
-        // PREPARAÇÃO DOS DADOS DO RELATORIO DE PENDÊNCIAS (DISCIPLINAS E BIMESTRES)
         let relatorioJSON = {
             bimestresProcessados: metadadosTurma.bimestres,
             disciplinas: []
         };
 
         let profsPorDisciplina = {};
+
+        Array.from(disciplinasLidasNoCabecalho).forEach(disc => {
+            profsPorDisciplina[disc] = { titulares: [], substitutos: [], chAula: 0 };
+        });
+
         infoServidores.lista.forEach(prof => {
             let isSub = prof.substituicao && prof.substituicao.toUpperCase() === 'SIM';
             let txt = `${prof.servidor}<br><small>(${prof.inicio || '-'} a ${prof.fim || '-'})</small>`;
-            if (!profsPorDisciplina[prof.disciplina]) profsPorDisciplina[prof.disciplina] = { titulares: [], substitutos: [], chAula: prof.chAula };
+
+            if (!profsPorDisciplina[prof.disciplina]) {
+                profsPorDisciplina[prof.disciplina] = { titulares: [], substitutos: [], chAula: prof.chAula };
+            }
 
             if (isSub) profsPorDisciplina[prof.disciplina].substitutos.push(txt);
             else profsPorDisciplina[prof.disciplina].titulares.push(txt);
@@ -442,13 +496,24 @@
             let infoDisc = profsPorDisciplina[disc];
             let discRelatorio = {
                 nome: disc,
-                titulares: infoDisc.titulares.join('<br>') || '-',
-                substitutos: infoDisc.substitutos.join('<br>') || '-',
+                titulares: infoDisc.titulares.length > 0 ? infoDisc.titulares.join('<br>') : '<strong style="color:#d93025;">SEM PROF. ATRIBUÍDO<br><span style="font-size:11px;">(Resp: Coordenação)</span></strong>',
+                substitutos: infoDisc.substitutos.length > 0 ? infoDisc.substitutos.join('<br>') : '-',
                 pendenciasBimestre: []
             };
 
             let diasLecionados = diasLecionadosGlobais[disc] || [];
             let chEsperada = infoDisc.chAula;
+
+            if (!chEsperada || chEsperada === 0) {
+                let maxL = 0;
+                semanasKeys.forEach(idSemana => {
+                    let dSemana = semanas[idSemana]?.datas || [];
+                    let qt = 0;
+                    diasLecionados.forEach(d => { if (dSemana.includes(d)) qt++; });
+                    if (qt > maxL) maxL = qt;
+                });
+                chEsperada = maxL > 0 ? maxL : 1;
+            }
 
             metadadosTurma.bimestres.forEach(bim => {
                 let bimIP = parseDataBR(bim.inicio);
@@ -528,38 +593,29 @@
                     });
                 }
 
-// 2. Semanas Abaixo da Meta (COM APRENDIZADO DE PADRÃO GLOBAL)
-if (chEsperada && !isNaN(chEsperada)) {
-    let freqDias = [0,0,0,0,0,0,0];
-    let semanasComLancamentoParaEstaDisciplina = 0;
+                if (chEsperada && !isNaN(chEsperada)) {
+                    let freqDias = [0,0,0,0,0,0,0];
+                    let semanasComLancamentoParaEstaDisciplina = 0;
 
-    // NOVA LÓGICA: Verifica em TODO O HISTÓRICO LIDO (ignora limites do bimestre)
-    // para descobrir o padrão real do professor, mesmo que o bimestre atual esteja vazio.
-    semanasKeys.forEach(idSemana => {
-        let datasDaSemana = semanas[idSemana].datas;
-        // Procura se em algum dia dessa semana houve lançamento para essa matéria (em todo o período lido)
-        let teveAlgumLancamento = diasLecionados.some(d => datasDaSemana.includes(d));
+                    semanasKeys.forEach(idSemana => {
+                        let datasDaSemana = semanas[idSemana].datas;
+                        let teveAlgumLancamento = diasLecionados.some(d => datasDaSemana.includes(d));
+                        if (teveAlgumLancamento) {
+                            semanasComLancamentoParaEstaDisciplina++;
+                        }
+                    });
 
-        if (teveAlgumLancamento) {
-            semanasComLancamentoParaEstaDisciplina++;
-        }
-    });
+                    diasLecionados.forEach(d => { freqDias[parseDataBR(d).getDay()]++; });
+                    let diasOrdenados = [1,2,3,4,5].sort((a,b) => freqDias[b] - freqDias[a]);
 
-    // Conta os dias da semana de todos os lançamentos já feitos na matéria
-    diasLecionados.forEach(d => { freqDias[parseDataBR(d).getDay()]++; });
-    let diasOrdenados = [1,2,3,4,5].sort((a,b) => freqDias[b] - freqDias[a]);
-
-
-// CALCULA O PADRÃO HISTÓRICO DE AULAS POR DIA (Arredondamento Inteligente)
                     let limiteInteligentePorDia = {};
                     let somaLimites = 0;
                     [1,2,3,4,5].forEach(dia => {
                         let media = semanasComLancamentoParaEstaDisciplina > 0 ? (freqDias[dia] / semanasComLancamentoParaEstaDisciplina) : 0;
-                        limiteInteligentePorDia[dia] = Math.round(media); // Arredonda para o número inteiro mais próximo
+                        limiteInteligentePorDia[dia] = Math.round(media);
                         somaLimites += limiteInteligentePorDia[dia];
                     });
 
-                    // Fallback: se não houver histórico de lançamentos no bimestre, previne o bloqueio
                     if (somaLimites === 0) {
                         [1,2,3,4,5].forEach(dia => limiteInteligentePorDia[dia] = 2);
                     }
@@ -611,7 +667,6 @@ if (chEsperada && !isNaN(chEsperada)) {
                                 semInfo.diasLancadosEstaSemana.forEach(d => { freqLancados[d] = (freqLancados[d] || 0) + 1; });
                                 let freqSugeridos = {};
 
-                                // Função auxiliar para estruturar os dados do aluno e processar atestados da sugestão
                                 const adicionarSugestao = (diaSemana, dataSugerida) => {
                                     let dtSug = parseDataBR(dataSugerida);
                                     if (dtSug >= bimIP && dtSug <= bimLimit) {
@@ -648,7 +703,6 @@ if (chEsperada && !isNaN(chEsperada)) {
                                     return false;
                                 };
 
-                                // PASSAGEM 1: Respeitando rigorosamente a média arredondada do professor
                                 for (let d = 0; d < diasOrdenados.length && sugestoes.length < falta; d++) {
                                     let diaSemana = diasOrdenados[d];
                                     let limiteDesteDia = limiteInteligentePorDia[diaSemana];
@@ -662,8 +716,6 @@ if (chEsperada && !isNaN(chEsperada)) {
                                     }
                                 }
 
-                                // PASSAGEM 2 (Fallback Extremo): Se a média histórica não for suficiente para
-                                // cobrir a meta, preenche em dias visando o limite de 6 aulas totais p/ a turma.
                                 if (sugestoes.length < falta) {
                                     for (let d = 0; d < diasOrdenados.length && sugestoes.length < falta; d++) {
                                         let diaSemana = diasOrdenados[d];
@@ -672,21 +724,35 @@ if (chEsperada && !isNaN(chEsperada)) {
                                             let dataSugerida = semInfo.datasDaSemana.find(ds => parseDataBR(ds).getDay() === diaSemana);
                                             if (!dataSugerida) break;
 
-                                            // Calcula quantas aulas a turma já teve neste dia (Lançadas Globais + Sugeridas localmente)
                                             let totalAulasTurmaNoDia = 0;
                                             Object.keys(diasLecionadosGlobais).forEach(discLec => {
                                                 totalAulasTurmaNoDia += (diasLecionadosGlobais[discLec].filter(dt => dt === dataSugerida).length || 0);
                                             });
 
                                             let cargaNoDia = totalAulasTurmaNoDia + (freqSugeridos[diaSemana] || 0);
-
-                                            // Limite absoluto de diário do estado
                                             if (cargaNoDia >= 6) break;
 
                                             if (!adicionarSugestao(diaSemana, dataSugerida)) break;
                                         }
                                     }
                                 }
+
+                                let sugestoesExtras = [];
+                                let diasProcessadosParaExtra = new Set();
+
+                                sugestoes.forEach(sug => {
+                                    let diaSemana = parseDataBR(sug.data).getDay();
+                                    if (!diasProcessadosParaExtra.has(sug.data)) {
+                                        diasProcessadosParaExtra.add(sug.data);
+                                        let lancadosNesteDia = freqLancados[diaSemana] || 0;
+                                        if (lancadosNesteDia > 0) {
+                                            for (let i = 0; i < lancadosNesteDia; i++) {
+                                                sugestoesExtras.push(JSON.parse(JSON.stringify(sug)));
+                                            }
+                                        }
+                                    }
+                                });
+                                sugestoes = sugestoes.concat(sugestoesExtras);
 
                                 pendBim.semanasAbaixoDaMeta.push({
                                     semana: semInfo.idSemana,
@@ -803,21 +869,18 @@ if (chEsperada && !isNaN(chEsperada)) {
                                 let rs = bim.semanasAbaixoDaMeta.length;
 
                                 bim.semanasAbaixoDaMeta.forEach((sem, idx) => {
-let arrDias = sem.sugestoes.map(sug => {
-    let nomesF = sug.alunos.filter(a => a.sugestao === 'F').map(a => {
-        let partes = a.nome.trim().split(/\s+/);
-        let primeiroNome = partes[0];
-        // Pega os sobrenomes, ignora os conectivos (tamanho <= 2) e pega a 1ª letra
-        let iniciais = partes.slice(1)
-            .filter(p => p.length > 2)
-            .map(p => p[0] + '.')
-            .join(' ');
+                                    let arrDias = sem.sugestoes.map(sug => {
+                                        let nomesF = sug.alunos.filter(a => a.sugestao === 'F').map(a => {
+                                            let partes = a.nome.trim().split(/\\s+/);
+                                            let primeiroNome = partes[0];
+                                            let iniciais = partes.slice(1)
+                                                .filter(p => p.length > 2)
+                                                .map(p => p[0] + '.')
+                                                .join(' ');
+                                            return iniciais ? primeiroNome + ' ' + iniciais : primeiroNome;
+                                        });
 
-        // CORREÇÃO AQUI: Usando o sinal de + no lugar do
-        return iniciais ? primeiroNome + ' ' + iniciais : primeiroNome;
-    });
-
-    if(nomesF.length > 0) {
+                                        if(nomesF.length > 0) {
                                             return '<strong>' + sug.data + '</strong> (Falta: ' + nomesF.join(', ') + '; Demais: .)';
                                         } else {
                                             return '<strong>'+ sug.data + '</strong> (Todos: .)';
@@ -1162,13 +1225,11 @@ let arrDias = sem.sugestoes.map(sug => {
 
             if (optAuditoria) {
                 notificarStatus("Acessando banco de Calendários Seduc...");
+                iframeImpressao.src = 'about:blank'; await delay(200); // Limpa o estado anterior
                 iframeImpressao.src = `http://sigeduca.seduc.mt.gov.br/grh/hwmgrhcalendarioimp.aspx?${metadadosTurma.ano},${escola}`;
-                await new Promise((resolve) => {
-                    const aoCarregar = () => { iframeImpressao.removeEventListener('load', aoCarregar); resolve(); };
-                    iframeImpressao.addEventListener('load', aoCarregar);
-                    setTimeout(() => { iframeImpressao.removeEventListener('load', aoCarregar); resolve(); }, 20000);
-                });
-                await delay(1500);
+
+                // Polling robusto aguardando os spans de data
+                await aguardarIframeTotalmente(iframeImpressao, '[id*="vDATAINDICE_"]');
 
                 try {
                     let targetDoc = iframeImpressao.contentWindow.document;
@@ -1197,12 +1258,10 @@ let arrDias = sem.sugestoes.map(sug => {
 
             if (optProfessores || optAuditoria) {
                 notificarStatus("Buscando Lotação dos Professores...");
+                iframeImpressao.src = 'about:blank'; await delay(200);
                 iframeImpressao.src = `http://sigeduca.seduc.mt.gov.br/ged/hwmgrhturmaservidor.aspx?${metadadosTurma.ano},${escola},${cidade},${sala},,${turnoNum},${chaveDesc1},${turnoTexto},HWMGrhLotTurma.aspx%3f0%2c0%2c0%2c0,${matriz},,,`;
-                await new Promise((resolve) => {
-                    const aoCarregar = () => { iframeImpressao.removeEventListener('load', aoCarregar); resolve(); };
-                    iframeImpressao.addEventListener('load', aoCarregar); setTimeout(() => { iframeImpressao.removeEventListener('load', aoCarregar); resolve(); }, 20000);
-                });
-                await delay(1500);
+
+                await aguardarIframeTotalmente(iframeImpressao, '#Grid1ContainerTbl');
                 if (iframeImpressao.contentWindow) {
                     extrairDadosServidores(iframeImpressao.contentWindow.document);
                     notificarStatus("Quadro de Professores vinculado.");
@@ -1211,12 +1270,11 @@ let arrDias = sem.sugestoes.map(sug => {
 
             notificarStatus("Coletando datas de matrícula dos alunos...");
             let urlAgFecha = `http://sigeduca.seduc.mt.gov.br/ged/hwmgedagfechaaluno.aspx?0,${metadadosTurma.ano},${escola},${sala},${turnoNum},N,1,0101${metadadosTurma.ano},3112${metadadosTurma.ano},1,0,0,${codMatriz},${turnoTexto},0,1,0,1,N,0,0`;
+
+            iframeImpressao.src = 'about:blank'; await delay(200);
             iframeImpressao.src = urlAgFecha;
-            await new Promise((resolve) => {
-                const aoCarregar = () => { iframeImpressao.removeEventListener('load', aoCarregar); resolve(); };
-                iframeImpressao.addEventListener('load', aoCarregar); setTimeout(() => { iframeImpressao.removeEventListener('load', aoCarregar); resolve(); }, 20000);
-            });
-            await delay(1500);
+            await aguardarIframeTotalmente(iframeImpressao, '#GridalunosContainerTbl');
+
             try {
                 let docAlunos = iframeImpressao.contentWindow.document;
                 let tblAlunos = docAlunos.getElementById('GridalunosContainerTbl');
@@ -1265,7 +1323,7 @@ let arrDias = sem.sugestoes.map(sug => {
 
             if (selectBimestreLoop) {
                 let optionsLoop = Array.from(selectBimestreLoop.options);
-                let opcoesValidas = optionsLoop.filter(opt => opt.value !== "0" && opt.value !== "21");
+                let opcoesValidas = optionsLoop.filter(opt => opt.value !== "0");
                 let idxRequisitado = opcoesValidas.findIndex(opt => opt.value === valorBimestreRequisitado);
 
                 if (idxRequisitado !== -1) {
@@ -1299,7 +1357,6 @@ let arrDias = sem.sugestoes.map(sug => {
                         while (!isNotificationHidden(document)) { await delay(300); }
                     }
 
-                    // SALVA INFORMAÇÕES DO BIMESTRE PROCESSSADO
                     let spanIni = document.getElementById('span_vDATAINICIOPERIODO');
                     let spanFim = document.getElementById('span_vDATAFINALPERIODO');
                     let bimText = selectBimestreLoop.options[selectBimestreLoop.selectedIndex].text;
@@ -1319,18 +1376,23 @@ let arrDias = sem.sugestoes.map(sug => {
                         if (form) form.setAttribute('target', 'iframeImpressao');
                         btnImprimir.value = "1";
 
-                        let timeoutId;
-                        let promiseLoadIframe = new Promise((resolve, reject) => {
-                            const aoCarregar = () => { iframeImpressao.removeEventListener('load', aoCarregar); clearTimeout(timeoutId); resolve(); };
-                            iframeImpressao.addEventListener('load', aoCarregar);
-                            timeoutId = setTimeout(() => { iframeImpressao.removeEventListener('load', aoCarregar); reject(new Error("Timeout_Sigeduca")); }, 40000);
-                        });
+                        // Limpa o iframe explicitamente para evitar falso positivo do estado anterior
+                        iframeImpressao.src = 'about:blank';
+                        await delay(300);
 
                         btnImprimir.click();
                         if (form) setTimeout(() => { if (targetOriginal === null) form.removeAttribute('target'); else form.setAttribute('target', targetOriginal); }, 1000);
 
-                        try { await promiseLoadIframe; await delay(500); }
-                        catch (err) { executandoLoop = false; notificarStatus("Erro no Sigeduca!", "#dc3545"); btnParar.style.display = 'none'; return; }
+                        try {
+                            // Espera até que de fato uma tag 'table' apareça dentro do iframe
+                            await aguardarIframeTotalmente(iframeImpressao, 'table', 60000);
+                            await delay(300); // Respiro de renderização final
+                        } catch (err) {
+                            executandoLoop = false;
+                            notificarStatus("Erro de carregamento no Relatório!", "#dc3545");
+                            btnParar.style.display = 'none';
+                            return;
+                        }
                     }
                     extrairDadosIframe();
                 }
