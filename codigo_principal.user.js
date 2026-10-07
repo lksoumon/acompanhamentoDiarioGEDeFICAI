@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Diario GED para acompanhamento de lançamentos e FICAI (Completo)
 // @namespace    http://tampermonkey.net/
-// @version      v3.17
+// @version      v3.18
 // @description  Cálculo % de previsto, Auditoria, Sugere correção com Detecção Automática de Aulas Duplas ou Simples por dia. (Carregamento Robusto Integrado)
 // @author       Lucas Monteiro
 // @match        http://sigeduca.seduc.mt.gov.br/ged/hwgedemitediarioclasse.aspx?*
@@ -47,17 +47,16 @@
         return tds[tds.length - 1];
     }
 
+
     function formatarData(dataString) {
-        if (!dataString) return "";
-        var strLimpa = dataString.replace(/[\n\r]/g, ' ').replace(/\s+/g, ' ').trim();
-        var partes = strLimpa.split(' ');
-        if (partes.length < 2) {
-             if (strLimpa.includes('/')) partes = strLimpa.split('/');
-             else return dataString;
-        }
-        var dia = parseInt(partes[0]); var mes = parseInt(partes[1]);
-        if (isNaN(dia) || isNaN(mes)) return dataString;
-        return (dia < 10 ? '0' + dia : dia) + '/' + (mes < 10 ? '0' + mes : mes);
+        if (!dataString || dataString.length !== 4) return dataString || "";
+
+        dataString = dataString.replace(" ","0");
+        // Extrai os 2 primeiros caracteres para o dia e os 2 últimos para o mês
+        const dia = dataString.slice(0, 2);
+        const mes = dataString.slice(2, 4);
+
+        return `${dia}/${mes}`;
     }
 
     function isNotificationHidden(docObject) {
@@ -120,7 +119,6 @@
         return container;
     }
 
-    // NOVA FUNÇÃO: Espera robusta baseada em polling de elementos reais da página
     function aguardarIframeTotalmente(iframe, seletorEsperado, timeoutMs = 80000) {
         return new Promise((resolve, reject) => {
             let tempoDecorrido = 0;
@@ -136,24 +134,19 @@
                     let win = iframe.contentWindow;
                     if (!win) return;
                     let doc = win.document;
-                    // Tenta acessar frames internos (caso o Sigeduca use framesets aninhados)
                     if (win.frames.length > 0) {
                         try { doc = win.frames[0].document; } catch(e){}
                     }
 
-                    // Ignora a página vazia temporária
                     if (doc && doc.readyState === 'complete' && doc.location.href !== 'about:blank') {
-                        // Aguarda spinner/carregamento do Genexus sumir
                         if (!isNotificationHidden(doc)) return;
 
                         if (seletorEsperado) {
-                            // Só avança se o seletor existir na árvore do DOM atual
                             if (doc.querySelector(seletorEsperado)) {
                                 clearInterval(checkInterval);
                                 resolve(doc);
                             }
                         } else {
-                            // Se não tiver seletor, certifica-se de que há conteúdo renderizado
                             if (doc.body && doc.body.innerHTML.trim().length > 100) {
                                 clearInterval(checkInterval);
                                 resolve(doc);
@@ -161,7 +154,6 @@
                         }
                     }
                 } catch (e) {
-                    // Exceção de cross-origin ignorada silenciosamente enquanto ocorre o redirecionamento
                 }
             }, intervalo);
         });
@@ -198,7 +190,7 @@
         const containerBotoes = document.getElementById('containerBotoesBimestre');
         if (selectBimestre && containerBotoes) {
             Array.from(selectBimestre.options).forEach(opcao => {
-                if (opcao.value !== "0") { // alterado aqui
+                if (opcao.value !== "0") {
                     let btn = document.createElement('button');
                     btn.innerText = `Processar ${opcao.text}`;
                     btn.style.cssText = 'padding: 8px; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px;';
@@ -240,6 +232,8 @@
         let disciplinaAtual = "Desconhecida";
         let cabecalhosLidosNesteIframe = new Set();
 
+        console.log(`[DEBUG - GED] Analisando iframe. Total de tabelas encontradas: ${tabelas.length}`);
+
         for (var n = 0; n < tabelas.length; n++) {
             var minhaTabela = tabelas[n];
             var ultimoTD = ultimoElementoTDPrimeiroTR(minhaTabela);
@@ -249,6 +243,8 @@
                 if (!spanHeader) continue;
                 var headerText = spanHeader.textContent.trim();
 
+                console.log(`[DEBUG - GED] Tabela index ${n} | Header lido na última coluna: "${headerText}"`);
+
                 if (headerText === "Disciplina:") {
                     try {
                         var linhasDd = minhaTabela.getElementsByTagName("tr")[0].getElementsByTagName("tr");
@@ -257,6 +253,7 @@
                             disciplinaAtual = tempDisc;
                             disciplinasLidasNoCabecalho.add(disciplinaAtual);
                             if (!diasLecionadosGlobais[disciplinaAtual]) diasLecionadosGlobais[disciplinaAtual] = [];
+                            console.log(`[DEBUG - GED] Disciplina atualizada para: ${disciplinaAtual}`);
                         }
 
                         if (!metadadosTurma.turma) {
@@ -267,16 +264,16 @@
                     } catch (e) { }
                 }
                 else if (headerText === "TF" || headerText === "Situação") {
-                    var linhas = minhaTabela.getElementsByTagName("tr");
+                    var linhas = minhaTabela.getElementsByTagName("tr"); //console.log("linhas", linhas);
                     var datas = [];
 
                     for (var i = 0; i < linhas.length; i++) {
                         if (i == 0) continue;
                         if (i == 1) {
-                            var dias = linhas[i].getElementsByTagName("td");
+                            var dias = linhas[i].getElementsByTagName("td");//console.log(dias);
                             for (var j = 0; j < dias.length; j++) {
-                                var textoData = dias[j].textContent || dias[j].innerText;
-                                let dFormatada = formatarData(textoData);
+                                var textoData = dias[j].textContent || dias[j].innerText; //console.log(textoData);
+                                let dFormatada = formatarData(textoData); //console.log(dFormatada);
 
                                 if (/^\d{2}\/\d{2}$/.test(dFormatada)) {
                                     datas.push(dFormatada);
@@ -285,6 +282,7 @@
                                     }
                                 }
                             }
+                            console.log(`[DEBUG - GED] Datas extraídas nesta tabela para ${disciplinaAtual}:`, datas);
                             cabecalhosLidosNesteIframe.add(disciplinaAtual);
                             continue;
                         }
@@ -393,6 +391,7 @@
     }
 
     function gerarEBaixarRelatorioHTML(opts) {
+        console.log(`[DEBUG - GED] Iniciando montagem do relatório...`);
         let anoDaTurma = parseInt(metadadosTurma.ano) || new Date().getFullYear();
         let bimestresTxt = metadadosTurma.bimestres.map(b => `${b.texto} (${b.inicio} a ${b.fim})`).join(' | ');
 
@@ -400,6 +399,7 @@
         Object.values(alunosDados).forEach(aluno => {
             Object.keys(aluno.calendario).forEach(data => { if (/^\d{2}\/\d{2}$/.test(data.trim())) todasAsDatas.add(data.trim()); });
         });
+        console.log(`[DEBUG - GED] Todas as datas únicas encontradas nos calendários:`, Array.from(todasAsDatas));
 
         let datasOrdenadas = Array.from(todasAsDatas).sort((a, b) => {
             let [da, ma] = a.split('/'); let [db, mb] = b.split('/'); return (ma + da).localeCompare(mb + db);
@@ -414,6 +414,8 @@
             semanas[idSemana].datas.push(data);
         });
 
+        console.log(`[DEBUG - GED] Semanas mapeadas:`, semanas);
+
         let semanasKeys = Object.keys(semanas).sort((a, b) => {
             let [diaA, mesA] = a.split(' a ')[0].split('/'); let [diaB, mesB] = b.split(' a ')[0].split('/');
             return (mesA+diaA).localeCompare(mesB+diaB);
@@ -426,6 +428,8 @@
             if (!datasPorMes[key]) datasPorMes[key] = { mesStr: mes, anoNum: anoDaTurma, datas: [] };
             datasPorMes[key].datas.push(data);
         });
+        console.log(`[DEBUG - GED] Datas mapeadas por mês:`, datasPorMes);
+
         const nomeMeses = ["Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"];
 
         let alunosArray = Object.keys(alunosDados).map(cod => {
@@ -519,6 +523,8 @@
                 let bimIP = parseDataBR(bim.inicio);
                 let bimFP = parseDataBR(bim.fim);
                 let bimLimit = bimFP > new Date() ? new Date() : bimFP;
+
+                console.log(`[DEBUG - GED] Fechando Bimestre: ${bim.texto} | Início: ${bim.inicio} | Fim: ${bim.fim} | Data Limite p/ Corte: ${bimLimit}`);
 
                 let pendBim = {
                     bimestre: bim.texto,
@@ -1195,6 +1201,10 @@
     async function iniciarLoop(valorBimestreRequisitado, textoBimestre) {
         if (executandoLoop) return; executandoLoop = true;
 
+        console.log(`\n\n[DEBUG - GED] ----------------------------------------------------`);
+        console.log(`[DEBUG - GED] INICIANDO LOOP PARA O BIMESTRE: ${valorBimestreRequisitado} (${textoBimestre})`);
+        console.log(`[DEBUG - GED] ----------------------------------------------------\n`);
+
         metadadosTurma = {
             ano: "", turma: "", turno: "", matrizDesc: "", datasMatricula: {}, bimestres: []
         };
@@ -1376,7 +1386,6 @@
                         if (form) form.setAttribute('target', 'iframeImpressao');
                         btnImprimir.value = "1";
 
-                        // Limpa o iframe explicitamente para evitar falso positivo do estado anterior
                         iframeImpressao.src = 'about:blank';
                         await delay(300);
 
@@ -1384,9 +1393,8 @@
                         if (form) setTimeout(() => { if (targetOriginal === null) form.removeAttribute('target'); else form.setAttribute('target', targetOriginal); }, 1000);
 
                         try {
-                            // Espera até que de fato uma tag 'table' apareça dentro do iframe
                             await aguardarIframeTotalmente(iframeImpressao, 'table', 60000);
-                            await delay(300); // Respiro de renderização final
+                            await delay(300);
                         } catch (err) {
                             executandoLoop = false;
                             notificarStatus("Erro de carregamento no Relatório!", "#dc3545");
@@ -1405,6 +1413,7 @@
         }
 
         if (executandoLoop) {
+            console.log(`[DEBUG - GED] Fim da extração. Resumo de diasLecionadosGlobais:`, diasLecionadosGlobais);
             notificarStatus("Extração Concluída!", "#28a745");
 
             const urlParams = new URLSearchParams(window.location.search);
