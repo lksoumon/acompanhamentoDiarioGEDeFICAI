@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         Diario GED para acompanhamento de lançamentos e FICAI (Completo)
+// @name         Diario GED para acompanhamento de lançamentos e FICAI
 // @namespace    http://tampermonkey.net/
-// @version      v3.18
+// @version      v3.19
 // @description  Cálculo % de previsto, Auditoria, Sugere correção com Detecção Automática de Aulas Duplas ou Simples por dia. (Carregamento Robusto Integrado)
 // @author       Lucas Monteiro
 // @match        http://sigeduca.seduc.mt.gov.br/ged/hwgedemitediarioclasse.aspx?*
@@ -49,13 +49,18 @@
 
 
     function formatarData(dataString) {
+        console.log(dataString, dataString?.length);
         if (!dataString || dataString.length !== 4) return dataString || "";
 
-        dataString = dataString.replace(" ","0");
-        // Extrai os 2 primeiros caracteres para o dia e os 2 últimos para o mês
+        // Substitui TODOS os espaços por "0" de uma só vez
+        dataString = dataString.replaceAll(" ", "0");
+        console.log(dataString);
+
+        // Extrai os dias e meses já formatados com zero
         const dia = dataString.slice(0, 2);
         const mes = dataString.slice(2, 4);
 
+        console.log(dia, "/", mes);
         return `${dia}/${mes}`;
     }
 
